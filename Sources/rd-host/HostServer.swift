@@ -5,7 +5,7 @@ import RDCore
 
 /// Accepts one client at a time and streams the screen to it.
 /// Everything here runs on `queue`, so no locking is needed.
-final class HostServer {
+final class HostServer: @unchecked Sendable {
     struct Config {
         var port: UInt16
         var maxWidth: Int
@@ -26,6 +26,9 @@ final class HostServer {
     private var encoder: VideoEncoder?
 
     private var client: FramedConnection?
+    /// Connections that finished TLS but haven't sent hello yet. Holding
+    /// them here keeps them alive; FramedConnection's handlers are weak.
+    private var pending: [ObjectIdentifier: FramedConnection] = [:]
     private var framesInFlight = 0
     private var needsKeyframe = true
     private var lastPixelBuffer: CVPixelBuffer?
@@ -78,18 +81,20 @@ final class HostServer {
 
     private func accept(_ connection: NWConnection) {
         let framed = FramedConnection(connection: connection, queue: queue)
-        var greeted = false
+        let id = ObjectIdentifier(framed)
+        pending[id] = framed
+        log("Incoming connection from \(framed.remoteDescription)")
 
         framed.onMessage = { [weak self, weak framed] type, payload in
             guard let self, let framed else { return }
             switch type {
             case .hello:
+                self.pending[id] = nil
                 guard let version = try? Hello.decode(payload), version == protocolVersion else {
                     log("Rejected \(framed.remoteDescription): unsupported protocol version")
                     framed.close()
                     return
                 }
-                greeted = true
                 self.activate(framed)
             case .requestKeyframe:
                 if framed === self.client { self.requestKeyframe() }
@@ -99,17 +104,24 @@ final class HostServer {
         }
         framed.onClose = { [weak self, weak framed] error in
             guard let self else { return }
+            self.pending[id] = nil
             if let framed, framed === self.client {
                 self.client = nil
                 self.framesInFlight = 0
                 log("Client disconnected\(error.map { ": \($0)" } ?? "")")
+            } else if let error {
+                // Most often a wrong pairing secret (TLS handshake fails).
+                log("Connection failed before hello: \(error)")
             }
         }
         framed.start()
 
-        // Drop connections that complete TLS but never say hello.
-        queue.asyncAfter(deadline: .now() + 10) { [weak framed] in
-            if !greeted { framed?.close() }
+        // Drop connections that never say hello.
+        queue.asyncAfter(deadline: .now() + 10) { [weak self] in
+            if let stale = self?.pending.removeValue(forKey: id) {
+                log("No hello from \(stale.remoteDescription) within 10s; closing")
+                stale.close()
+            }
         }
     }
 
