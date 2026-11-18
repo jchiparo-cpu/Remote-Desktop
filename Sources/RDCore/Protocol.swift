@@ -71,7 +71,7 @@ public struct ByteReader {
 /// One encoded H.264 frame in AVCC form (4-byte length-prefixed NAL units),
 /// exactly as VideoToolbox produces it. Keyframes carry SPS/PPS so the
 /// client can (re)build its decoder from any keyframe.
-public struct VideoFramePacket: Equatable {
+public struct VideoFramePacket: Equatable, Sendable {
     public var isKeyframe: Bool
     public var presentationTimeMicros: UInt64
     public var parameterSets: [Data]
