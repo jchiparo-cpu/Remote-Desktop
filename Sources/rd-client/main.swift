@@ -83,6 +83,11 @@ final class ClientController: NSObject, NSApplicationDelegate, NSWindowDelegate 
             self.queue.async { self.connection?.send(.requestKeyframe) }
         }
         videoView.onVideoSize = { [weak self] size in self?.fit(to: size) }
+        videoView.onInput = { [weak self] event in
+            guard let self else { return }
+            self.queue.async { self.connection?.send(event.messageType, event.encoded()) }
+        }
+        window.makeFirstResponder(videoView)
 
         connect()
     }

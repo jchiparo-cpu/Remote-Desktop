@@ -74,6 +74,15 @@ if !CGPreflightScreenCaptureAccess() {
     exit(1)
 }
 
+if !InputInjector.checkPermission(prompt: true) {
+    print("""
+    Note: remote mouse and keyboard need Accessibility permission. macOS should
+    show a prompt; allow the app you run rd-host from (e.g. Terminal) in
+    System Settings > Privacy & Security > Accessibility, then restart rd-host.
+    Screen viewing works without it.
+    """)
+}
+
 let server = HostServer(config: config, secret: secret)
 Task {
     do {

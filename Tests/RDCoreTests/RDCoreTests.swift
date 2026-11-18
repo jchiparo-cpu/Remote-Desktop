@@ -55,4 +55,24 @@ final class RDCoreTests: XCTestCase {
         XCTAssertEqual(try Hello.decode(Hello.encode()), protocolVersion)
         XCTAssertThrowsError(try Hello.decode(Data([1])))
     }
+
+    func testInputEventsRoundTrip() throws {
+        let events: [InputEvent] = [
+            .mouseMove(x: 0.25, y: 0.75),
+            .mouseButton(button: .right, down: true, clickCount: 2, x: 1, y: 0),
+            .scroll(dx: -3.5, dy: 12),
+            .key(keyCode: 0x24, down: false, flags: 1 << 20),
+        ]
+        for event in events {
+            XCTAssertEqual(try InputEvent.decode(type: event.messageType, payload: event.encoded()), event)
+        }
+        XCTAssertNil(try InputEvent.decode(type: .hello, payload: Data()))
+    }
+
+    func testInputRejectsNonFiniteAndTruncated() {
+        var w = ByteWriter()
+        w.u32(Float.nan.bitPattern); w.u32(Float(0).bitPattern)
+        XCTAssertThrowsError(try InputEvent.decode(type: .mouseMove, payload: w.data))
+        XCTAssertThrowsError(try InputEvent.decode(type: .key, payload: Data([0, 1])))
+    }
 }

@@ -11,7 +11,11 @@ public enum MessageType: UInt8 {
     case videoFrame = 2
     /// client -> host. Empty payload. Sent after a decode error or on start.
     case requestKeyframe = 3
-    // 10...19 reserved for input events (milestone 2).
+    /// client -> host input events. Payloads: see `InputEvent`.
+    case mouseMove = 10
+    case mouseButton = 11
+    case scroll = 12
+    case key = 13
 }
 
 public let protocolVersion: UInt16 = 1
@@ -126,5 +130,76 @@ public enum Hello {
     public static func decode(_ data: Data) throws -> UInt16 {
         var r = ByteReader(data)
         return try r.u16()
+    }
+}
+
+// MARK: - Input
+
+public enum MouseButton: UInt8, Sendable {
+    case left = 0
+    case right = 1
+    case other = 2
+}
+
+/// Input sent from the client to the host. Positions are normalized to
+/// 0...1 across the shared display (origin top-left), so they don't depend
+/// on the stream's resolution or the client window's size.
+public enum InputEvent: Equatable, Sendable {
+    case mouseMove(x: Float, y: Float)
+    case mouseButton(button: MouseButton, down: Bool, clickCount: UInt8, x: Float, y: Float)
+    /// Pixel deltas in NSEvent.scrollingDeltaX/Y convention.
+    case scroll(dx: Float, dy: Float)
+    /// macOS virtual key code and device-independent modifier flags
+    /// (same bit layout in NSEvent.ModifierFlags and CGEventFlags).
+    case key(keyCode: UInt16, down: Bool, flags: UInt64)
+
+    public var messageType: MessageType {
+        switch self {
+        case .mouseMove: return .mouseMove
+        case .mouseButton: return .mouseButton
+        case .scroll: return .scroll
+        case .key: return .key
+        }
+    }
+
+    public func encoded() -> Data {
+        var w = ByteWriter()
+        switch self {
+        case let .mouseMove(x, y):
+            w.u32(x.bitPattern); w.u32(y.bitPattern)
+        case let .mouseButton(button, down, clickCount, x, y):
+            w.u8(button.rawValue); w.u8(down ? 1 : 0); w.u8(clickCount)
+            w.u32(x.bitPattern); w.u32(y.bitPattern)
+        case let .scroll(dx, dy):
+            w.u32(dx.bitPattern); w.u32(dy.bitPattern)
+        case let .key(keyCode, down, flags):
+            w.u16(keyCode); w.u8(down ? 1 : 0); w.u64(flags)
+        }
+        return w.data
+    }
+
+    /// Returns nil for message types that aren't input.
+    public static func decode(type: MessageType, payload: Data) throws -> InputEvent? {
+        var r = ByteReader(payload)
+        func float() throws -> Float {
+            let value = Float(bitPattern: try r.u32())
+            guard value.isFinite else { throw ProtocolError("non-finite coordinate") }
+            return value
+        }
+        switch type {
+        case .mouseMove:
+            return .mouseMove(x: try float(), y: try float())
+        case .mouseButton:
+            guard let button = MouseButton(rawValue: try r.u8()) else { throw ProtocolError("bad mouse button") }
+            let down = try r.u8() != 0
+            let clicks = try r.u8()
+            return .mouseButton(button: button, down: down, clickCount: clicks, x: try float(), y: try float())
+        case .scroll:
+            return .scroll(dx: try float(), dy: try float())
+        case .key:
+            return .key(keyCode: try r.u16(), down: try r.u8() != 0, flags: try r.u64())
+        case .hello, .videoFrame, .requestKeyframe:
+            return nil
+        }
     }
 }

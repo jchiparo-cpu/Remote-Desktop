@@ -1,3 +1,4 @@
+import ApplicationServices
 import CoreVideo
 import Foundation
 import Network
@@ -29,6 +30,8 @@ final class HostServer: @unchecked Sendable {
     /// Connections that finished TLS but haven't sent hello yet. Holding
     /// them here keeps them alive; FramedConnection's handlers are weak.
     private var pending: [ObjectIdentifier: FramedConnection] = [:]
+    private let input = InputInjector()
+    private var warnedNoAccessibility = false
     private var framesInFlight = 0
     private var needsKeyframe = true
     private var lastPixelBuffer: CVPixelBuffer?
@@ -98,6 +101,9 @@ final class HostServer: @unchecked Sendable {
                 self.activate(framed)
             case .requestKeyframe:
                 if framed === self.client { self.requestKeyframe() }
+            case .mouseMove, .mouseButton, .scroll, .key:
+                guard framed === self.client else { return }
+                self.handleInput(type, payload)
             case .videoFrame:
                 break
             }
@@ -108,6 +114,7 @@ final class HostServer: @unchecked Sendable {
             if let framed, framed === self.client {
                 self.client = nil
                 self.framesInFlight = 0
+                self.input.releaseAll()
                 log("Client disconnected\(error.map { ": \($0)" } ?? "")")
             } else if let error {
                 // Most often a wrong pairing secret (TLS handshake fails).
@@ -134,6 +141,29 @@ final class HostServer: @unchecked Sendable {
         framesInFlight = 0
         log("Client connected from \(connection.remoteDescription)")
         requestKeyframe()
+    }
+
+    // MARK: - Input
+
+    private func handleInput(_ type: MessageType, _ payload: Data) {
+        guard AXIsProcessTrusted() else {
+            if !warnedNoAccessibility {
+                warnedNoAccessibility = true
+                log("""
+                Ignoring mouse/keyboard: Accessibility permission is off. Allow the app
+                you run rd-host from (e.g. Terminal) in System Settings > Privacy & Security >
+                Accessibility, then restart rd-host.
+                """)
+            }
+            return
+        }
+        do {
+            if let event = try InputEvent.decode(type: type, payload: payload) {
+                input.handle(event)
+            }
+        } catch {
+            log("Bad input message: \(error)")
+        }
     }
 
     // MARK: - Video pipeline
